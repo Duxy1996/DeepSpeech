@@ -11,10 +11,12 @@ download_material "${TASKCLUSTER_TMP_DIR}/ds"
 
 export PATH=${TASKCLUSTER_TMP_DIR}/ds/:$PATH
 
-check_tensorflow_version
+check_versions
 
 run_all_inference_tests
 
 run_multi_inference_tests
 
 run_cpp_only_inference_tests
+
+run_hotword_tests

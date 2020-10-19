@@ -14,8 +14,9 @@
         // Invalid parameters
         DS_ERR_INVALID_ALPHABET = 0x2000,
         DS_ERR_INVALID_SHAPE = 0x2001,
-        DS_ERR_INVALID_LM = 0x2002,
+        DS_ERR_INVALID_SCORER = 0x2002,
         DS_ERR_MODEL_INCOMPATIBLE = 0x2003,
+        DS_ERR_SCORER_NOT_ENABLED = 0x2004,
 
         // Runtime failures
         DS_ERR_FAIL_INIT_MMAP = 0x3000,
@@ -25,5 +26,8 @@
         DS_ERR_FAIL_CREATE_STREAM = 0x3004,
         DS_ERR_FAIL_READ_PROTOBUF = 0x3005,
         DS_ERR_FAIL_CREATE_SESS = 0x3006,
+        DS_ERR_FAIL_INSERT_HOTWORD = 0x3008,
+        DS_ERR_FAIL_CLEAR_HOTWORD = 0x3009,
+        DS_ERR_FAIL_ERASE_HOTWORD = 0x3010
     }
 }

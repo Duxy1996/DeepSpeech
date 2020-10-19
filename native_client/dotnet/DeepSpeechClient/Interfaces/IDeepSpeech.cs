@@ -5,14 +5,15 @@ using System.IO;
 namespace DeepSpeechClient.Interfaces
 {
     /// <summary>
-    /// Client interface of the Mozilla's DeepSpeech implementation.
+    /// Client interface of Mozilla's DeepSpeech implementation.
     /// </summary>
     public interface IDeepSpeech : IDisposable
     {
         /// <summary>
-        /// Prints the versions of Tensorflow and DeepSpeech.
+        /// Return version of this library. The returned version is a semantic version
+        /// (SemVer 2.0.0).
         /// </summary>
-        void PrintVersions();
+        unsafe string Version();
 
         /// <summary>
         /// Return the sample rate expected by the model.
@@ -21,18 +22,62 @@ namespace DeepSpeechClient.Interfaces
         unsafe int GetModelSampleRate();
 
         /// <summary>
-        /// Enable decoding using beam scoring with a KenLM language model.
+        /// Get beam width value used by the model. If SetModelBeamWidth was not
+        /// called before, will return the default value loaded from the model
+        /// file.
         /// </summary>
-        /// <param name="aLMPath">The path to the language model binary file.</param>
-        /// <param name="aTriePath">The path to the trie file build from the same vocabulary as the language model binary.</param>
-        /// <param name="aLMAlpha">The alpha hyperparameter of the CTC decoder. Language Model weight.</param>
-        /// <param name="aLMBeta">The beta hyperparameter of the CTC decoder. Word insertion weight.</param>
-        /// <exception cref="ArgumentException">Thrown when the native binary failed to enable decoding with a language model.</exception>
-        /// <exception cref="FileNotFoundException">Thrown when cannot find the language model or trie file.</exception>
-        unsafe void EnableDecoderWithLM(string aLMPath,
-                  string aTriePath,
-                  float aLMAlpha,
-                  float aLMBeta);
+        /// <returns>Beam width value used by the model.</returns>
+        unsafe uint GetModelBeamWidth();
+
+        /// <summary>
+        /// Set beam width value used by the model.
+        /// </summary>
+        /// <param name="aBeamWidth">The beam width used by the decoder. A larger beam width value generates better results at the cost of decoding time.</param>
+        /// <exception cref="ArgumentException">Thrown on failure.</exception>
+        unsafe void SetModelBeamWidth(uint aBeamWidth);
+
+        /// <summary>
+        /// Enable decoding using an external scorer.
+        /// </summary>
+        /// <param name="aScorerPath">The path to the external scorer file.</param>
+        /// <exception cref="ArgumentException">Thrown when the native binary failed to enable decoding with an external scorer.</exception>
+        /// <exception cref="FileNotFoundException">Thrown when cannot find the scorer file.</exception>
+        unsafe void EnableExternalScorer(string aScorerPath);
+
+        /// <summary>
+        /// Add a hot-word.
+        /// </summary>
+        /// <param name="aWord">Some word</param>
+        /// <param name="aBoost">Some boost</param>
+        /// <exception cref="ArgumentException">Thrown on failure.</exception>
+        unsafe void AddHotWord(string aWord, float aBoost);
+
+        /// <summary>
+        /// Erase entry for a hot-word.
+        /// </summary>
+        /// <param name="aWord">Some word</param>
+        /// <exception cref="ArgumentException">Thrown on failure.</exception>
+        unsafe void EraseHotWord(string aWord);
+
+        /// <summary>
+        /// Clear all hot-words.
+        /// </summary>
+        /// <exception cref="ArgumentException">Thrown on failure.</exception>
+        unsafe void ClearHotWords();
+
+        /// <summary>
+        /// Disable decoding using an external scorer.
+        /// </summary>
+        /// <exception cref="ArgumentException">Thrown when an external scorer is not enabled.</exception>
+        unsafe void DisableExternalScorer();
+
+        /// <summary>
+        /// Set hyperparameters alpha and beta of the external scorer.
+        /// </summary>
+        /// <param name="aAlpha">The alpha hyperparameter of the decoder. Language model weight.</param>
+        /// <param name="aBeta">The beta hyperparameter of the decoder. Word insertion weight.</param>
+        /// <exception cref="ArgumentException">Thrown when an external scorer is not enabled.</exception>
+        unsafe void SetScorerAlphaBeta(float aAlpha, float aBeta);
 
         /// <summary>
         /// Use the DeepSpeech model to perform Speech-To-Text.
@@ -44,13 +89,15 @@ namespace DeepSpeechClient.Interfaces
                 uint aBufferSize);
 
         /// <summary>
-        /// Use the DeepSpeech model to perform Speech-To-Text.
+        /// Use the DeepSpeech model to perform Speech-To-Text, return results including metadata.
         /// </summary>
         /// <param name="aBuffer">A 16-bit, mono raw audio signal at the appropriate sample rate (matching what the model was trained on).</param>
         /// <param name="aBufferSize">The number of samples in the audio signal.</param>
+        /// <param name="aNumResults">Maximum number of candidate transcripts to return. Returned list might be smaller than this.</param>
         /// <returns>The extended metadata. Returns NULL on error.</returns>
         unsafe Metadata SpeechToTextWithMetadata(short[] aBuffer,
-                uint aBufferSize);
+                uint aBufferSize,
+                uint aNumResults);
 
         /// <summary>
         /// Destroy a streaming state without decoding the computed logits.
@@ -79,6 +126,14 @@ namespace DeepSpeechClient.Interfaces
         unsafe string IntermediateDecode(DeepSpeechStream stream);
 
         /// <summary>
+        /// Computes the intermediate decoding of an ongoing streaming inference, including metadata.
+        /// </summary>
+        /// <param name="stream">Instance of the stream to decode.</param>
+        /// <param name="aNumResults">Maximum number of candidate transcripts to return. Returned list might be smaller than this.</param>
+        /// <returns>The extended metadata result.</returns>
+        unsafe Metadata IntermediateDecodeWithMetadata(DeepSpeechStream stream, uint aNumResults);
+
+        /// <summary>
         /// Closes the ongoing streaming inference, returns the STT result over the whole audio signal.
         /// </summary>
         /// <param name="stream">Instance of the stream to finish.</param>
@@ -86,10 +141,11 @@ namespace DeepSpeechClient.Interfaces
         unsafe string FinishStream(DeepSpeechStream stream);
 
         /// <summary>
-        /// Closes the ongoing streaming inference, returns the STT result over the whole audio signal.
+        /// Closes the ongoing streaming inference, returns the STT result over the whole audio signal, including metadata.
         /// </summary>
         /// <param name="stream">Instance of the stream to finish.</param>
+        /// <param name="aNumResults">Maximum number of candidate transcripts to return. Returned list might be smaller than this.</param>
         /// <returns>The extended metadata result.</returns>
-        unsafe Metadata FinishStreamWithMetadata(DeepSpeechStream stream);
+        unsafe Metadata FinishStreamWithMetadata(DeepSpeechStream stream, uint aNumResults);
     }
 }

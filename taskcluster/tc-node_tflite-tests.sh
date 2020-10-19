@@ -34,3 +34,7 @@ npm install --prefix ${NODE_ROOT} --cache ${NODE_CACHE} ${deepspeech_npm_url}
 check_runtime_nodejs
 
 run_all_inference_tests
+
+run_js_streaming_inference_tests
+
+run_hotword_tests

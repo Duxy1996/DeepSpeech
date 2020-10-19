@@ -8,7 +8,7 @@ metadata:
   source: "{{ event.head.repo.url }}"  # the repo where the pr came from will be inserted here
 tasks:
   - provisionerId: "proj-deepspeech"
-    workerType: "ci"
+    workerType: "ci-decision-task"
     extra:
       github:
         env: true
@@ -21,18 +21,13 @@ tasks:
         branches:
           - master
 
-    routes:
-      - "notify.irc-channel.#machinelearning.on-any"
-
     scopes: [
       "queue:create-task:highest:proj-deepspeech/*",
       "queue:route:index.project.deepspeech.*",
-      "queue:route:notify.irc-channel.*",
+      "index:insert-task:project.deepspeech.*",
       "queue:scheduler-id:taskcluster-github",
-      "generic-worker:cache:deepspeech-homebrew-bin",
-      "generic-worker:cache:deepspeech-homebrew-cache",
-      "generic-worker:cache:deepspeech-homebrew-local",
       "generic-worker:cache:deepspeech-macos-pyenv",
+      "docker-worker:capability:device:kvm"
     ]
 
     payload:
@@ -50,7 +45,7 @@ tasks:
         - "--login"
         - "-cxe"
         - >
-          echo "deb http://archive.ubuntu.com/ubuntu/ trusty-updates main" > /etc/apt/sources.list.d/trusty-updates.list &&
+          echo "deb http://archive.ubuntu.com/ubuntu/ xenial-updates main" > /etc/apt/sources.list.d/xenial-updates.list &&
           apt-get -qq update && apt-get -qq -y install git python3-pip curl sudo &&
           adduser --system --home /home/build-user build-user &&
           cd /home/build-user/ &&

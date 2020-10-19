@@ -4,11 +4,11 @@ set -xe
 
 source $(dirname "$0")/tc-tests-utils.sh
 
-source ${DS_ROOT_TASK}/DeepSpeech/tf/tc-vars.sh
+source $(dirname "$0")/tf_tc-vars.sh
 
 BAZEL_TARGETS="
 //native_client:libdeepspeech.so
-//native_client:generate_trie
+//native_client:generate_scorer_package
 "
 
 BAZEL_BUILD_FLAGS="${BAZEL_ARM_FLAGS} ${BAZEL_EXTRA_FLAGS}"
@@ -22,7 +22,7 @@ do_bazel_build
 
 do_deepspeech_binary_build
 
-export SUPPORTED_PYTHON_VERSIONS="3.7.6:ucs4"
+export SUPPORTED_PYTHON_VERSIONS="3.7.6:ucs2"
 do_deepspeech_python_build
 
 do_deepspeech_nodejs_build

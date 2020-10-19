@@ -18,7 +18,6 @@ model_source=${DEEPSPEECH_PROD_MODEL//.pb/.tflite}
 model_name=$(basename "${model_source}")
 model_name_mmap=$(basename "${model_source}")
 model_source_mmap=${DEEPSPEECH_PROD_MODEL_MMAP//.pbmm/.tflite}
-export DEEPSPEECH_ARTIFACTS_ROOT=${DEEPSPEECH_ARTIFACTS_TFLITE_ROOT}
 
 download_data
 
@@ -36,3 +35,5 @@ npm install --prefix ${NODE_ROOT} --cache ${NODE_CACHE} ${deepspeech_npm_url}
 check_runtime_nodejs
 
 run_prodtflite_inference_tests "${bitrate}"
+
+run_js_streaming_prodtflite_inference_tests "${bitrate}"

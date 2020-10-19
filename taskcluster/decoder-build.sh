@@ -4,8 +4,12 @@ set -xe
 
 source $(dirname "$0")/tc-tests-utils.sh
 
-source ${DS_ROOT_TASK}/DeepSpeech/tf/tc-vars.sh
+source $(dirname "$0")/tf_tc-vars.sh
 
-export SYSTEM_TARGET=host
+if [ "${OS}" = "${TC_MSYS_VERSION}" ]; then
+  export SYSTEM_TARGET=host-win
+else
+  export SYSTEM_TARGET=host
+fi;
 
 do_deepspeech_decoder_build

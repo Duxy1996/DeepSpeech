@@ -10,13 +10,12 @@ import csv
 import os
 import sys
 
-from functools import partial
-from six.moves import zip, range
-from multiprocessing import JoinableQueue, Process, cpu_count, Manager
 from deepspeech import Model
-
-from util.evaluate_tools import calculate_report
-from util.flags import create_flags
+from deepspeech_training.util.evaluate_tools import calculate_and_print_report
+from deepspeech_training.util.flags import create_flags
+from functools import partial
+from multiprocessing import JoinableQueue, Process, cpu_count, Manager
+from six.moves import zip, range
 
 r'''
 This module should be self-contained:
@@ -27,17 +26,13 @@ This module should be self-contained:
   - pip install native_client/python/dist/deepspeech*.whl
   - pip install -r requirements_eval_tflite.txt
 
-Then run with a TF Lite model, LM/trie and a CSV test file
+Then run with a TF Lite model, a scorer and a CSV test file
 '''
 
-BEAM_WIDTH = 500
-LM_ALPHA = 0.75
-LM_BETA = 1.85
-
-def tflite_worker(model, lm, trie, queue_in, queue_out, gpu_mask):
+def tflite_worker(model, scorer, queue_in, queue_out, gpu_mask):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_mask)
-    ds = Model(model, BEAM_WIDTH)
-    ds.enableDecoderWithLM(lm, trie, LM_ALPHA, LM_BETA)
+    ds = Model(model)
+    ds.enableExternalScorer(scorer)
 
     while True:
         try:
@@ -64,7 +59,7 @@ def main(args, _):
 
     processes = []
     for i in range(args.proc):
-        worker_process = Process(target=tflite_worker, args=(args.model, args.lm, args.trie, work_todo, work_done, i), daemon=True, name='tflite_process_{}'.format(i))
+        worker_process = Process(target=tflite_worker, args=(args.model, args.scorer, work_todo, work_done, i), daemon=True, name='tflite_process_{}'.format(i))
         worker_process.start()        # Launch reader() as a separate python process
         processes.append(worker_process)
 
@@ -98,11 +93,8 @@ def main(args, _):
         predictions.append(msg['prediction'])
         wavlist.append(msg['wav'])
 
-    wer, cer, samples = calculate_report(wav_filenames, ground_truths, predictions, losses)
-    mean_loss = np.mean(losses)
-
-    print('Test - WER: %f, CER: %f, loss: %f' %
-          (wer, cer, mean_loss))
+    # Print test summary
+    _ = calculate_and_print_report(wav_filenames, ground_truths, predictions, losses, args.csv)
 
     if args.dump:
         with open(args.dump + '.txt', 'w') as ftxt, open(args.dump + '.out', 'w') as fout:
@@ -116,10 +108,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Computing TFLite accuracy')
     parser.add_argument('--model', required=True,
                         help='Path to the model (protocol buffer binary file)')
-    parser.add_argument('--lm', required=True,
-                        help='Path to the language model binary file')
-    parser.add_argument('--trie', required=True,
-                        help='Path to the language model trie file created with native_client/generate_trie')
+    parser.add_argument('--scorer', required=True,
+                        help='Path to the external scorer file')
     parser.add_argument('--csv', required=True,
                         help='Path to the CSV source file')
     parser.add_argument('--proc', required=False, default=cpu_count(), type=int,

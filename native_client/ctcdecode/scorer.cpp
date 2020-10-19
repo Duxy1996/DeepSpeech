@@ -24,41 +24,37 @@
 
 #include "decoder_utils.h"
 
-using namespace lm::ngram;
-
 static const int32_t MAGIC = 'TRIE';
-static const int32_t FILE_VERSION = 5;
+static const int32_t FILE_VERSION = 6;
 
 int
-Scorer::init(double alpha,
-             double beta,
-             const std::string& lm_path,
-             const std::string& trie_path,
+Scorer::init(const std::string& lm_path,
              const Alphabet& alphabet)
 {
-  reset_params(alpha, beta);
-  alphabet_ = alphabet;
-  setup(lm_path, trie_path);
-  return 0;
+  set_alphabet(alphabet);
+  return load_lm(lm_path);
 }
 
 int
-Scorer::init(double alpha,
-             double beta,
-             const std::string& lm_path,
-             const std::string& trie_path,
+Scorer::init(const std::string& lm_path,
              const std::string& alphabet_config_path)
 {
-  reset_params(alpha, beta);
   int err = alphabet_.init(alphabet_config_path.c_str());
   if (err != 0) {
     return err;
   }
-  setup(lm_path, trie_path);
-  return 0;
+  setup_char_map();
+  return load_lm(lm_path);
 }
 
-void Scorer::setup(const std::string& lm_path, const std::string& trie_path)
+void
+Scorer::set_alphabet(const Alphabet& alphabet)
+{
+  alphabet_ = alphabet;
+  setup_char_map();
+}
+
+void Scorer::setup_char_map()
 {
   // (Re-)Initialize character map
   char_map_.clear();
@@ -69,84 +65,129 @@ void Scorer::setup(const std::string& lm_path, const std::string& trie_path)
     // The initial state of FST is state 0, hence the index of chars in
     // the FST should start from 1 to avoid the conflict with the initial
     // state, otherwise wrong decoding results would be given.
-    char_map_[alphabet_.StringFromLabel(i)] = i + 1;
+    char_map_[alphabet_.DecodeSingle(i)] = i + 1;
   }
-
-  // load language model
-  const char* filename = lm_path.c_str();
-  VALID_CHECK_EQ(access(filename, R_OK), 0, "Invalid language model path");
-
-  bool has_trie = trie_path.size() && access(trie_path.c_str(), R_OK) == 0;
-
-  lm::ngram::Config config;
-
-  if (!has_trie) { // no trie was specified, build it now
-    RetrieveStrEnumerateVocab enumerate;
-    config.enumerate_vocab = &enumerate;
-    language_model_.reset(lm::ngram::LoadVirtual(filename, config));
-    auto vocab = enumerate.vocabulary;
-    for (size_t i = 0; i < vocab.size(); ++i) {
-      if (vocab[i] != UNK_TOKEN &&
-          vocab[i] != START_TOKEN &&
-          vocab[i] != END_TOKEN &&
-          get_utf8_str_len(vocab[i]) > 1) {
-        is_utf8_mode_ = false;
-        break;
-      }
-    }
-
-    if (alphabet_.GetSize() != 255) {
-      is_utf8_mode_ = false;
-    }
-
-    // Add spaces only in word-based scoring
-    fill_dictionary(vocab);
-  } else {
-    config.load_method = util::LoadMethod::LAZY;
-    language_model_.reset(lm::ngram::LoadVirtual(filename, config));
-
-    // Read metadata and trie from file
-    std::ifstream fin(trie_path, std::ios::binary);
-
-    int magic;
-    fin.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-    if (magic != MAGIC) {
-      std::cerr << "Error: Can't parse trie file, invalid header. Try updating "
-                   "your trie file." << std::endl;
-      throw 1;
-    }
-
-    int version;
-    fin.read(reinterpret_cast<char*>(&version), sizeof(version));
-    if (version != FILE_VERSION) {
-      std::cerr << "Error: Trie file version mismatch (" << version
-                << " instead of expected " << FILE_VERSION
-                << "). Update your trie file."
-                << std::endl;
-      throw 1;
-    }
-
-    fin.read(reinterpret_cast<char*>(&is_utf8_mode_), sizeof(is_utf8_mode_));
-
-    fst::FstReadOptions opt;
-    opt.mode = fst::FstReadOptions::MAP;
-    opt.source = trie_path;
-    dictionary.reset(FstType::Read(fin, opt));
-  }
-
-  max_order_ = language_model_->Order();
 }
 
-void Scorer::save_dictionary(const std::string& path)
+int Scorer::load_lm(const std::string& lm_path)
 {
-  std::ofstream fout(path, std::ios::binary);
+  // Check if file is readable to avoid KenLM throwing an exception
+  const char* filename = lm_path.c_str();
+  if (access(filename, R_OK) != 0) {
+    return DS_ERR_SCORER_UNREADABLE;
+  }
+
+  // Check if the file format is valid to avoid KenLM throwing an exception
+  lm::ngram::ModelType model_type;
+  if (!lm::ngram::RecognizeBinary(filename, model_type)) {
+    return DS_ERR_SCORER_INVALID_LM;
+  }
+
+  // Load the LM
+  lm::ngram::Config config;
+  config.load_method = util::LoadMethod::LAZY;
+  language_model_.reset(lm::ngram::LoadVirtual(filename, config));
+  max_order_ = language_model_->Order();
+
+  uint64_t package_size;
+  {
+    util::scoped_fd fd(util::OpenReadOrThrow(filename));
+    package_size = util::SizeFile(fd.get());
+  }
+  uint64_t trie_offset = language_model_->GetEndOfSearchOffset();
+  if (package_size <= trie_offset) {
+    // File ends without a trie structure
+    return DS_ERR_SCORER_NO_TRIE;
+  }
+
+  // Read metadata and trie from file
+  std::ifstream fin(lm_path, std::ios::binary);
+  fin.seekg(trie_offset);
+  return load_trie(fin, lm_path);
+}
+
+int Scorer::load_trie(std::ifstream& fin, const std::string& file_path)
+{
+  int magic;
+  fin.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+  if (magic != MAGIC) {
+    std::cerr << "Error: Can't parse scorer file, invalid header. Try updating "
+                 "your scorer file." << std::endl;
+    return DS_ERR_SCORER_INVALID_TRIE;
+  }
+
+  int version;
+  fin.read(reinterpret_cast<char*>(&version), sizeof(version));
+  if (version != FILE_VERSION) {
+    std::cerr << "Error: Scorer file version mismatch (" << version
+              << " instead of expected " << FILE_VERSION
+              << "). ";
+    if (version < FILE_VERSION) {
+      std::cerr << "Update your scorer file.";
+    } else {
+      std::cerr << "Downgrade your scorer file or update your version of DeepSpeech.";
+    }
+    std::cerr << std::endl;
+    return DS_ERR_SCORER_VERSION_MISMATCH;
+  }
+
+  fin.read(reinterpret_cast<char*>(&is_utf8_mode_), sizeof(is_utf8_mode_));
+
+  // Read hyperparameters from header
+  double alpha, beta;
+  fin.read(reinterpret_cast<char*>(&alpha), sizeof(alpha));
+  fin.read(reinterpret_cast<char*>(&beta), sizeof(beta));
+  reset_params(alpha, beta);
+
+  fst::FstReadOptions opt;
+  opt.mode = fst::FstReadOptions::MAP;
+  opt.source = file_path;
+  dictionary.reset(FstType::Read(fin, opt));
+  return DS_ERR_OK;
+}
+
+bool Scorer::save_dictionary(const std::string& path, bool append_instead_of_overwrite)
+{
+  std::ios::openmode om;
+  if (append_instead_of_overwrite) {
+    om = std::ios::in|std::ios::out|std::ios::binary|std::ios::ate;
+  } else {
+    om = std::ios::out|std::ios::binary;
+  }
+  std::fstream fout(path, om);
+  if (!fout ||fout.bad()) {
+    std::cerr << "Error opening '" << path << "'" << std::endl;
+    return false;
+  }
   fout.write(reinterpret_cast<const char*>(&MAGIC), sizeof(MAGIC));
+  if (fout.bad()) {
+    std::cerr << "Error writing MAGIC '" << path << "'" << std::endl;
+    return false;
+  }
   fout.write(reinterpret_cast<const char*>(&FILE_VERSION), sizeof(FILE_VERSION));
+  if (fout.bad()) {
+    std::cerr << "Error writing FILE_VERSION '" << path << "'" << std::endl;
+    return false;
+  }
   fout.write(reinterpret_cast<const char*>(&is_utf8_mode_), sizeof(is_utf8_mode_));
+  if (fout.bad()) {
+    std::cerr << "Error writing is_utf8_mode '" << path << "'" << std::endl;
+    return false;
+  }
+  fout.write(reinterpret_cast<const char*>(&alpha), sizeof(alpha));
+  if (fout.bad()) {
+    std::cerr << "Error writing alpha '" << path << "'" << std::endl;
+    return false;
+  }
+  fout.write(reinterpret_cast<const char*>(&beta), sizeof(beta));
+  if (fout.bad()) {
+    std::cerr << "Error writing beta '" << path << "'" << std::endl;
+    return false;
+  }
   fst::FstWriteOptions opt;
   opt.align = true;
   opt.source = path;
-  dictionary->Write(fout, opt);
+  return dictionary->Write(fout, opt);
 }
 
 bool Scorer::is_scoring_boundary(PathTrie* prefix, size_t new_label)
@@ -156,7 +197,7 @@ bool Scorer::is_scoring_boundary(PathTrie* prefix, size_t new_label)
       return false;
     }
     unsigned char first_byte;
-    int distance_to_boundary = prefix->distance_to_codepoint_boundary(&first_byte);
+    int distance_to_boundary = prefix->distance_to_codepoint_boundary(&first_byte, alphabet_);
     int needed_bytes;
     if ((first_byte >> 3) == 0x1E) {
       needed_bytes = 4;
@@ -220,64 +261,17 @@ double Scorer::get_log_cond_prob(const std::vector<std::string>::const_iterator&
   return cond_prob/NUM_FLT_LOGE;
 }
 
-double Scorer::get_sent_log_prob(const std::vector<std::string>& words)
-{
-  // For a given sentence (`words`), return sum of LM scores over windows on
-  // sentence. For example, given the sentence:
-  //
-  //    there once was an ugly barnacle
-  //
-  // And a language model with max_order_ = 3, this function will return the sum
-  // of the following scores:
-  //
-  //    there                  | <s>
-  //    there   once           | <s>
-  //    there   once     was
-  //    once    was      an
-  //    was     an       ugly
-  //    an      ugly     barnacle
-  //    ugly    barnacle </s>
-  //
-  // This is used in the decoding process to compute the LM contribution for a
-  // given beam's accumulated score, so that it can be removed and only the
-  // acoustic model contribution can be returned as a confidence score for the
-  // transcription. See DecoderState::decode.
-  const int sent_len = words.size();
-
-  double score = 0.0;
-  for (int win_start = 0, win_end = 1; win_end <= sent_len+1; ++win_end) {
-    const int win_size = win_end - win_start;
-    bool bos = win_size < max_order_;
-    bool eos = win_end == (sent_len + 1);
-
-    // The last window goes one past the end of the words vector as passing the
-    // EOS=true flag counts towards the length of the scored sentence, so we
-    // adjust the win_end index here to not go over bounds.
-    score += get_log_cond_prob(words.begin() + win_start,
-                               words.begin() + (eos ? win_end - 1 : win_end),
-                               bos,
-                               eos);
-
-    // Only increment window start position after we have a full window
-    if (win_size == max_order_) {
-      win_start++;
-    }
-  }
-
-  return score / NUM_FLT_LOGE;
-}
-
 void Scorer::reset_params(float alpha, float beta)
 {
   this->alpha = alpha;
   this->beta = beta;
 }
 
-std::vector<std::string> Scorer::split_labels_into_scored_units(const std::vector<int>& labels)
+std::vector<std::string> Scorer::split_labels_into_scored_units(const std::vector<unsigned int>& labels)
 {
   if (labels.empty()) return {};
 
-  std::string s = alphabet_.LabelsToString(labels);
+  std::string s = alphabet_.Decode(labels);
   std::vector<std::string> words;
   if (is_utf8_mode_) {
     words = split_into_codepoints(s);
@@ -298,25 +292,24 @@ std::vector<std::string> Scorer::make_ngram(PathTrie* prefix)
       break;
     }
 
-    std::vector<int> prefix_vec;
-    std::vector<int> prefix_steps;
+    std::vector<unsigned int> prefix_vec;
 
     if (is_utf8_mode_) {
-      new_node = current_node->get_prev_grapheme(prefix_vec, prefix_steps);
+      new_node = current_node->get_prev_grapheme(prefix_vec, alphabet_);
     } else {
-      new_node = current_node->get_prev_word(prefix_vec, prefix_steps, SPACE_ID_);
+      new_node = current_node->get_prev_word(prefix_vec, alphabet_);
     }
     current_node = new_node->parent;
 
     // reconstruct word
-    std::string word = alphabet_.LabelsToString(prefix_vec);
+    std::string word = alphabet_.Decode(prefix_vec);
     ngram.push_back(word);
   }
   std::reverse(ngram.begin(), ngram.end());
   return ngram;
 }
 
-void Scorer::fill_dictionary(const std::vector<std::string>& vocabulary)
+void Scorer::fill_dictionary(const std::unordered_set<std::string>& vocabulary)
 {
   // ConstFst is immutable, so we need to use a MutableFst to create the trie,
   // and then we convert to a ConstFst for the decoder and for storing on disk.
